@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Monitor de Sensores — SSE</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            min-height: 100vh;
+            background: linear-gradient(160deg, #0f172a 0%, #1e293b 60%, #0f172a 100%);
+            color: #e2e8f0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 40px 20px;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 8px;
+        }
+
+        h1 {
+            font-size: 1.8rem;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+        }
+
+        .subtitulo {
+            color: #94a3b8;
+            font-size: 0.95rem;
+            margin-top: 4px;
+        }
+
+        /* ---- Indicador de estado da conexão ---- */
+        .status {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            margin: 24px 0 36px;
+            padding: 8px 18px;
+            border-radius: 999px;
+            font-size: 0.9rem;
+            font-weight: 500;
+            background: rgba(148, 163, 184, 0.12);
+            border: 1px solid rgba(148, 163, 184, 0.25);
+            transition: all 0.3s ease;
+        }
+
+        .status .dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #94a3b8;
+        }
+
+        .status.conectando .dot,
+        .status.reconectando .dot {
+            background: #facc15;
+            animation: pulsar 1s infinite;
+        }
+
+        .status.conectado .dot {
+            background: #4ade80;
+        }
+
+        .status.conectando { color: #facc15; border-color: rgba(250, 204, 21, 0.4); }
+        .status.reconectando { color: #facc15; border-color: rgba(250, 204, 21, 0.4); }
+        .status.conectado { color: #4ade80; border-color: rgba(74, 222, 128, 0.4); }
+
+        @keyframes pulsar {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+
+        /* ---- Cards dos sensores ---- */
+        .cards {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 24px;
+            justify-content: center;
+            width: 100%;
+            max-width: 980px;
+        }
+
+        .card {
+            flex: 1 1 260px;
+            max-width: 300px;
+            background: rgba(30, 41, 59, 0.85);
+            border: 1px solid rgba(148, 163, 184, 0.18);
+            border-radius: 16px;
+            padding: 28px 24px;
+            text-align: center;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+            transition: transform 0.2s ease;
+        }
+
+        .card.atualizado {
+            animation: piscar 0.4s ease;
+        }
+
+        @keyframes piscar {
+            0% { border-color: #38bdf8; box-shadow: 0 0 18px rgba(56, 189, 248, 0.45); }
+            100% { border-color: rgba(148, 163, 184, 0.18); }
+        }
+
+        .card .icone {
+            font-size: 2.2rem;
+        }
+
+        .card .nome {
+            font-size: 1.1rem;
+            font-weight: 600;
+            text-transform: capitalize;
+            margin-top: 8px;
+            color: #cbd5e1;
+        }
+
+        .card .temperatura {
+            font-size: 3rem;
+            font-weight: 700;
+            margin: 14px 0 6px;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .temperatura.fria { color: #38bdf8; }
+        .temperatura.amena { color: #4ade80; }
+        .temperatura.quente { color: #f87171; }
+
+        .card .timestamp {
+            font-size: 0.8rem;
+            color: #64748b;
+        }
+
+        footer {
+            margin-top: 48px;
+            font-size: 0.8rem;
+            color: #475569;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>🌡️ Monitor de Sensores de Temperatura</h1>
+        <p class="subtitulo">Atualização em tempo real via Server-Sent Events</p>
+    </header>
+
+    <div id="status" class="status conectando">
+        <span class="dot"></span>
+        <span id="status-texto">Conectando</span>
+    </div>
+
+    <main id="cards" class="cards"></main>
+
+    <footer>
+        ADS1242 — Mensageria e Streams em Aplicações · PUC Goiás<br>
+        Endpoint: <code>GET /sensores/stream</code>
+    </footer>
+
+    <script>
+        const ICONES = { sala: '🛋️', server: '🖥️', externo: '🌳' };
+
+        const statusEl = document.getElementById('status');
+        const statusTexto = document.getElementById('status-texto');
+        const cardsEl = document.getElementById('cards');
+
+        // Distingue a primeira conexão de uma reconexão
+        let jaConectou = false;
+
+        function definirStatus(estado) {
+            statusEl.className = 'status ' + estado;
+            statusTexto.textContent = estado.charAt(0).toUpperCase() + estado.slice(1);
+        }
+
+        // Cria (uma única vez) o card de um sensor e devolve suas referências
+        const cards = {};
+        function obterCard(sensor) {
+            if (cards[sensor]) return cards[sensor];
+
+            const card = document.createElement('div');
+            card.className = 'card';
+            card.innerHTML = `
+                <div class="icone">${ICONES[sensor] || '📡'}</div>
+                <div class="nome">${sensor}</div>
+                <div class="temperatura">--</div>
+                <div class="timestamp">aguardando dados...</div>
+            `;
+            cardsEl.appendChild(card);
+
+            cards[sensor] = {
+                raiz: card,
+                temperatura: card.querySelector('.temperatura'),
+                timestamp: card.querySelector('.timestamp')
+            };
+            return cards[sensor];
+        }
+
+        function classeTemperatura(valor) {
+            if (valor < 23) return 'fria';
+            if (valor <= 27) return 'amena';
+            return 'quente';
+        }
+
+        function atualizarCard(leitura) {
+            const card = obterCard(leitura.sensor);
+
+            card.temperatura.textContent = leitura.valor.toFixed(1) + ' °C';
+            card.temperatura.className = 'temperatura ' + classeTemperatura(leitura.valor);
+
+            const hora = new Date(leitura.timestamp).toLocaleTimeString('pt-BR');
+            card.timestamp.textContent = 'última atualização: ' + hora;
+
+            // Reinicia a animação de destaque
+            card.raiz.classList.remove('atualizado');
+            void card.raiz.offsetWidth;
+            card.raiz.classList.add('atualizado');
+        }
+
+        // 1. Abrir a conexão SSE
+        const source = new EventSource('/sensores/stream');
+
+        // 2. Conexão estabelecida
+        source.onopen = () => {
+            jaConectou = true;
+            definirStatus('conectado');
+        };
+
+        // 3. Eventos do tipo "temperatura" (campo event: temperatura)
+        source.addEventListener('temperatura', (event) => {
+            const leitura = JSON.parse(event.data);
+            atualizarCard(leitura);
+        });
+
+        // 4. Eventos sem tipo definido (campo "event" ausente)
+        source.onmessage = (event) => {
+            console.log('Evento genérico:', event.data);
+        };
+
+        // 5. Tratamento de erros e reconexão automática do browser
+        source.onerror = () => {
+            if (source.readyState === EventSource.CLOSED) {
+                definirStatus('desconectado');
+                console.log('Conexão encerrada pelo servidor.');
+            } else {
+                definirStatus(jaConectou ? 'reconectando' : 'conectando');
+                console.warn('Erro SSE — o browser tentará reconectar...');
+            }
+        };
+    </script>
+</body>
+</html>
